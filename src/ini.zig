@@ -64,7 +64,7 @@ pub const Parser = struct {
         var iter = std.mem.splitScalar(u8, this.src, '\n');
         var head: *E.Object = this.out.data.e_object;
 
-        // var duplicates = std.StringArrayHashMapUnmanaged(u32){};
+        // var duplicates = bun.StringArrayHashMapUnmanaged(u32){};
         // defer duplicates.deinit(allocator);
 
         var rope_stack = std.heap.stackFallback(@sizeOf(Rope) * 6, arena_allocator);
@@ -268,7 +268,7 @@ pub const Parser = struct {
                     return "[Object object]";
                 },
                 else => {
-                    const str = std.fmt.allocPrint(arena_allocator, "{}", .{toStringFormatter{ .d = json_val.data }}) catch |e| {
+                    const str = std.fmt.allocPrint(arena_allocator, "{}", .{ToStringFormatter{ .d = json_val.data }}) catch |e| {
                         this.logger.addErrorFmt(&this.source, Loc{ .start = offset }, arena_allocator, "failed to stringify value: {s}", .{@errorName(e)}) catch bun.outOfMemory();
                         return error.ParserError;
                     };
@@ -653,7 +653,7 @@ pub const IniTestingAPIs = struct {
     }
 };
 
-pub const toStringFormatter = struct {
+pub const ToStringFormatter = struct {
     d: js_ast.Expr.Data,
 
     pub fn format(this: *const @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
@@ -662,7 +662,7 @@ pub const toStringFormatter = struct {
                 const last = this.d.e_array.items.len -| 1;
                 for (this.d.e_array.items.slice(), 0..) |*e, i| {
                     const is_last = i == last;
-                    try writer.print("{}{s}", .{ toStringFormatter{ .d = e.data }, if (is_last) "" else "," });
+                    try writer.print("{}{s}", .{ ToStringFormatter{ .d = e.data }, if (is_last) "" else "," });
                 }
             },
             .e_object => try writer.print("[Object object]", .{}),
@@ -672,49 +672,9 @@ pub const toStringFormatter = struct {
             .e_null => try writer.print("null", .{}),
             .e_utf8_string => try writer.print("{s}", .{this.d.e_utf8_string.data}),
 
-            .e_unary => {},
-            .e_binary => {},
-            .e_class => {},
-
-            .e_new => {},
-            .e_function => {},
-            .e_call => {},
-            .e_dot => {},
-            .e_index => {},
-            .e_arrow => {},
-
-            .e_jsx_element => {},
-            .e_spread => {},
-            .e_template_part => {},
-            .e_template => {},
-            .e_reg_exp => {},
-            .e_await => {},
-            .e_yield => {},
-            .e_if => {},
-            .e_import => {},
-
-            .e_identifier => {},
-            .e_import_identifier => {},
-            .e_private_identifier => {},
-            .e_commonjs_export_identifier => {},
-
-            .e_big_int => {},
-
-            .e_require_string => {},
-            .e_require_resolve_string => {},
-            .e_require_call_target => {},
-            .e_require_resolve_call_target => {},
-
-            .e_missing => {},
-            .e_this => {},
-            .e_super => {},
-            .e_undefined => {},
-            .e_new_target => {},
-            .e_import_meta => {},
-
-            // This type should not exist outside of MacroContext
-            // If it ends up in JSParser or JSPrinter, it is a bug.
-            .inline_identifier => {},
+            else => |tag| if (bun.Environment.isDebug) {
+                Output.panic("Unexpected AST node: {s}", .{@tagName(tag)});
+            },
         }
     }
 };
@@ -745,9 +705,10 @@ pub const ConfigIterator = struct {
         registry_url: []const u8,
         optname: Opt,
         value: []const u8,
+        loc: Loc,
 
         pub const Opt = enum {
-            /// base64 authentication string
+            /// `${username}:${password}` encoded in base64
             _auth,
 
             /// authentication string
@@ -755,6 +716,7 @@ pub const ConfigIterator = struct {
 
             username,
 
+            /// this is encoded as base64 in .npmrc
             _password,
 
             email,
@@ -764,7 +726,41 @@ pub const ConfigIterator = struct {
 
             /// path to key file
             keyfile,
+
+            pub fn isBase64Encoded(this: Opt) bool {
+                return switch (this) {
+                    ._auth, ._password => true,
+                    else => false,
+                };
+            }
         };
+
+        /// Duplicate the value, decoding it if it is base64 encoded.
+        pub fn dupeValueDecoded(
+            this: *const Item,
+            allocator: Allocator,
+            log: *bun.logger.Log,
+            source: *const bun.logger.Source,
+        ) ?[]const u8 {
+            if (this.optname.isBase64Encoded()) {
+                if (this.value.len == 0) return "";
+                const len = bun.base64.decodeLen(this.value);
+                var slice = allocator.alloc(u8, len) catch bun.outOfMemory();
+                const result = bun.base64.decode(slice[0..], this.value);
+                if (result.status != .success) {
+                    log.addErrorFmt(
+                        source,
+                        this.loc,
+                        allocator,
+                        "{s} is not valid base64",
+                        .{@tagName(this.optname)},
+                    ) catch bun.outOfMemory();
+                    return null;
+                }
+                return allocator.dupe(u8, slice[0..result.count]) catch bun.outOfMemory();
+            }
+            return allocator.dupe(u8, this.value) catch bun.outOfMemory();
+        }
 
         pub fn format(this: *const @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("//{s}:{s}={s}", .{ this.registry_url, @tagName(this.optname), this.value });
@@ -807,6 +803,7 @@ pub const ConfigIterator = struct {
                                             .registry_url = url_part,
                                             .value = value,
                                             .optname = std.meta.stringToEnum(Item.Opt, name).?,
+                                            .loc = prop.key.?.loc,
                                         },
                                     };
                                 }
@@ -868,8 +865,6 @@ pub const ScopeIterator = struct {
                             },
                         };
                     }
-
-                    return .none;
                 }
             }
         }
@@ -883,8 +878,9 @@ pub fn loadNpmrcFromFile(
     install: *bun.Schema.Api.BunInstall,
     env: *bun.DotEnv.Loader,
     auto_loaded: bool,
-    log: *bun.logger.Log,
-) !void {
+) void {
+    var log = bun.logger.Log.init(allocator);
+    defer log.deinit();
     const npmrc_file = switch (bun.sys.openat(bun.FD.cwd(), ".npmrc", bun.O.RDONLY, 0)) {
         .result => |fd| fd,
         .err => |err| {
@@ -898,22 +894,25 @@ pub fn loadNpmrcFromFile(
     };
     defer _ = bun.sys.close(npmrc_file);
 
-    var npmrc_contents = std.ArrayList(u8).init(allocator);
-    defer npmrc_contents.deinit();
-    switch (bun.sys.File.readToEndWithArrayList(bun.sys.File{ .handle = npmrc_file }, &npmrc_contents)) {
-        .result => {},
-        .err => |err| {
-            // TODO: should this exit(1)?
+    const source = switch (bun.sys.File.toSource(".npmrc", allocator)) {
+        .result => |s| s,
+        .err => |e| {
             Output.prettyErrorln("{}\nwhile reading .npmrc \"{s}\"", .{
-                err,
+                e,
                 ".npmrc",
             });
             Global.exit(1);
         },
-    }
-    const source = bun.logger.Source.initPathString(".npmrc", npmrc_contents.items[0..]);
+    };
+    defer allocator.free(source.contents);
 
-    return loadNpmrc(allocator, install, env, auto_loaded, log, &source);
+    loadNpmrc(allocator, install, env, auto_loaded, &log, &source) catch {
+        if (log.errors == 1)
+            Output.warn("Encountered an error while reading <b>.npmrc<r>:\n", .{})
+        else
+            Output.warn("Encountered errors while reading <b>.npmrc<r>:\n", .{});
+    };
+    log.printForLogLevel(Output.errorWriter()) catch bun.outOfMemory();
 }
 
 pub fn loadNpmrc(
@@ -1068,7 +1067,7 @@ pub fn loadNpmrc(
         // The line that sets the auth token should only apply to the @myorg scope
         // The line that sets the username would apply to both @myorg and @another
         var url_map = url_map: {
-            var url_map = std.StringArrayHashMap(bun.URL).init(parser.arena.allocator());
+            var url_map = bun.StringArrayHashMap(bun.URL).init(parser.arena.allocator());
             url_map.ensureTotalCapacity(registry_map.scopes.keys().len) catch bun.outOfMemory();
 
             for (registry_map.scopes.keys(), registry_map.scopes.values()) |*k, *v| {
@@ -1105,12 +1104,12 @@ pub fn loadNpmrc(
                 // - @myorg:registry=https://somewhere-else.com/myorg
                 const conf_item: bun.ini.ConfigIterator.Item = conf_item_;
                 switch (conf_item.optname) {
-                    ._auth, .email, .certfile, .keyfile => {
+                    .email, .certfile, .keyfile => {
                         log.addWarningFmt(
                             source,
                             iter.config.properties.at(iter.prop_idx - 1).key.?.loc,
                             allocator,
-                            "The follwing .npmrc registry option was not applied:\n\n  <b>{s}<r>\n\nBecause we currently don't support the <b>{s}<r> option.",
+                            "The following .npmrc registry option was not applied:\n\n  <b>{s}<r>\n\nBecause we currently don't support the <b>{s}<r> option.",
                             .{
                                 conf_item,
                                 @tagName(conf_item.optname),
@@ -1135,10 +1134,19 @@ pub fn loadNpmrc(
                     };
 
                     switch (conf_item.optname) {
-                        ._authToken => v.token = allocator.dupe(u8, conf_item.value) catch bun.outOfMemory(),
-                        .username => v.username = allocator.dupe(u8, conf_item.value) catch bun.outOfMemory(),
-                        ._password => v.password = allocator.dupe(u8, conf_item.value) catch bun.outOfMemory(),
-                        ._auth, .email, .certfile, .keyfile => unreachable,
+                        ._authToken => {
+                            if (conf_item.dupeValueDecoded(allocator, log, source)) |x| v.token = x;
+                        },
+                        .username => {
+                            if (conf_item.dupeValueDecoded(allocator, log, source)) |x| v.username = x;
+                        },
+                        ._password => {
+                            if (conf_item.dupeValueDecoded(allocator, log, source)) |x| v.password = x;
+                        },
+                        ._auth => {
+                            _ = @"handle _auth"(allocator, v, &conf_item, log, source);
+                        },
+                        .email, .certfile, .keyfile => unreachable,
                     }
                     continue;
                 }
@@ -1155,10 +1163,19 @@ pub fn loadNpmrc(
                         }
                         matched_at_least_one = true;
                         switch (conf_item.optname) {
-                            ._authToken => v.token = allocator.dupe(u8, conf_item.value) catch bun.outOfMemory(),
-                            .username => v.username = allocator.dupe(u8, conf_item.value) catch bun.outOfMemory(),
-                            ._password => v.password = allocator.dupe(u8, conf_item.value) catch bun.outOfMemory(),
-                            ._auth, .email, .certfile, .keyfile => unreachable,
+                            ._authToken => {
+                                if (conf_item.dupeValueDecoded(allocator, log, source)) |x| v.token = x;
+                            },
+                            .username => {
+                                if (conf_item.dupeValueDecoded(allocator, log, source)) |x| v.username = x;
+                            },
+                            ._password => {
+                                if (conf_item.dupeValueDecoded(allocator, log, source)) |x| v.password = x;
+                            },
+                            ._auth => {
+                                _ = @"handle _auth"(allocator, v, &conf_item, log, source);
+                            },
+                            .email, .certfile, .keyfile => unreachable,
                         }
                         // We have to keep going as it could match multiple scopes
                         continue;
@@ -1170,7 +1187,7 @@ pub fn loadNpmrc(
                         source,
                         iter.config.properties.at(iter.prop_idx - 1).key.?.loc,
                         allocator,
-                        "The follwing .npmrc registry option was not applied:\n\n  <b>{s}<r>\n\nBecause we couldn't find the registry: <b>{s}<r>.",
+                        "The following .npmrc registry option was not applied:\n\n  <b>{s}<r>\n\nBecause we couldn't find the registry: <b>{s}<r>.",
                         .{
                             conf_item,
                             conf_item.registry_url,
@@ -1182,23 +1199,50 @@ pub fn loadNpmrc(
     }
 
     const had_errors = log.hasErrors();
-    log.printForLogLevel(Output.errorWriter()) catch bun.outOfMemory();
     if (had_errors) {
         return error.ParserError;
     }
+}
 
-    // if (!bun.Environment.isDebug) {
-    //     if (!@import("./bun.js/module_loader.zig").ModuleLoader.is_allowed_to_use_internal_testing_apis)
-    //         return;
-    // }
-
-    // if (bun.getenvTruthy("BUN_TEST_LOG_DEFAULT_REGISTRY")) {
-    //     if (install.default_registry) |reg| {
-    //         Output.print("Default registry url: {s}\n", .{reg.url});
-    //         Output.print("Default registry token: {s}\n", .{reg.token});
-    //         Output.print("Default registry username: {s}\n", .{reg.username});
-    //         Output.print("Default registry password: {s}\n", .{reg.password});
-    //         Output.flush();
-    //     }
-    // }
+fn @"handle _auth"(
+    allocator: Allocator,
+    v: *bun.Schema.Api.NpmRegistry,
+    conf_item: *const ConfigIterator.Item,
+    log: *bun.logger.Log,
+    source: *const bun.logger.Source,
+) void {
+    if (conf_item.value.len == 0) {
+        log.addErrorFmt(
+            source,
+            conf_item.loc,
+            allocator,
+            "invalid _auth value, expected it to be \"\\<username\\>:\\<password\\>\" encoded in base64, but got an empty string",
+            .{},
+        ) catch bun.outOfMemory();
+        return;
+    }
+    const decode_len = bun.base64.decodeLen(conf_item.value);
+    const decoded = allocator.alloc(u8, decode_len) catch bun.outOfMemory();
+    const result = bun.base64.decode(decoded[0..], conf_item.value);
+    if (!result.isSuccessful()) {
+        defer allocator.free(decoded);
+        log.addErrorFmt(source, conf_item.loc, allocator, "invalid base64", .{}) catch bun.outOfMemory();
+        return;
+    }
+    const @"username:password" = decoded[0..result.count];
+    const colon_idx = std.mem.indexOfScalar(u8, @"username:password", ':') orelse {
+        defer allocator.free(decoded);
+        log.addErrorFmt(source, conf_item.loc, allocator, "invalid _auth value, expected it to be \"\\<username\\>:\\<password\\>\" encoded in base 64, but got:\n\n{s}", .{decoded}) catch bun.outOfMemory();
+        return;
+    };
+    const username = @"username:password"[0..colon_idx];
+    if (colon_idx + 1 >= @"username:password".len) {
+        defer allocator.free(decoded);
+        log.addErrorFmt(source, conf_item.loc, allocator, "invalid _auth value, expected it to be \"\\<username\\>:\\<password\\>\" encoded in base64, but got:\n\n{s}", .{decoded}) catch bun.outOfMemory();
+        return;
+    }
+    const password = @"username:password"[colon_idx + 1 ..];
+    v.username = username;
+    v.password = password;
+    return;
 }
