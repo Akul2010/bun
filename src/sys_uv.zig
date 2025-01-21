@@ -99,6 +99,19 @@ pub fn fchmod(fd: FileDescriptor, flags: bun.Mode) Maybe(void) {
         .{ .result = {} };
 }
 
+pub fn statfs(file_path: [:0]const u8) Maybe(bun.StatFS) {
+    assertIsValidWindowsPath(u8, file_path);
+    var req: uv.fs_t = uv.fs_t.uninitialized;
+    defer req.deinit();
+    const rc = uv.uv_fs_statfs(uv.Loop.get(), &req, file_path.ptr, null);
+
+    log("uv statfs({s}) = {d}", .{ file_path, rc.int() });
+    return if (rc.errno()) |errno|
+        .{ .err = .{ .errno = errno, .syscall = .statfs, .path = file_path } }
+    else
+        .{ .result = bun.StatFS.init(req.ptrAs(*align(1) bun.StatFS)) };
+}
+
 pub fn chown(file_path: [:0]const u8, uid: uv.uv_uid_t, gid: uv.uv_uid_t) Maybe(void) {
     assertIsValidWindowsPath(u8, file_path);
     var req: uv.fs_t = uv.fs_t.uninitialized;
@@ -214,8 +227,7 @@ pub fn link(from: [:0]const u8, to: [:0]const u8) Maybe(void) {
 
     log("uv link({s}, {s}) = {d}", .{ from, to, rc.int() });
     return if (rc.errno()) |errno|
-        // which one goes in the .path field?
-        .{ .err = .{ .errno = errno, .syscall = .link } }
+        .{ .err = .{ .errno = errno, .syscall = .link, .path = from, .dest = to } }
     else
         .{ .result = {} };
 }

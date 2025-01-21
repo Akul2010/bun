@@ -31,8 +31,7 @@ const allCredentials = [
   },
 ];
 
-// TODO: figure out why minio is not creating a bucket on Linux, works on macOS and windows
-if (isDockerEnabled() && !isLinux) {
+if (isDockerEnabled()) {
   const minio_dir = tempDirWithFiles("minio", {});
   const result = child_process.spawnSync(
     "docker",
@@ -70,7 +69,7 @@ if (isDockerEnabled() && !isLinux) {
   await Bun.sleep(1_000);
 
   /// create a bucket
-  child_process.spawnSync(dockerCLI, [`exec`, `minio`, `mc`, `mb`, `http://localhost:9000/buntest`], {
+  child_process.spawnSync(dockerCLI, [`exec`, `minio`, `mc`, `mb`, `data/buntest`], {
     stdio: "ignore",
   });
 
@@ -101,8 +100,10 @@ for (let credentials of allCredentials) {
 
     // 10 MiB big enough to Multipart upload in more than one part
     const bigPayload = makePayLoadFrom("Bun is the best runtime ever", 10 * 1024 * 1024);
+    // more than 5 MiB but less than 2 parts size
+    const mediumPayload = makePayLoadFrom("Bun is the best runtime ever", 6 * 1024 * 1024);
+    // less than 5 MiB
     const bigishPayload = makePayLoadFrom("Bun is the best runtime ever", 1 * 1024 * 1024);
-
     describe.skipIf(!s3Options.accessKeyId)("s3", () => {
       for (let bucketInName of [true, false]) {
         describe("fetch", () => {
@@ -234,6 +235,11 @@ for (let credentials of allCredentials) {
               const file = bucket.file(tmp_filename, options);
               const text = await file.slice(6, 10).text();
               expect(text).toBe("Bun!");
+            });
+            it("should download range with 0 offset", async () => {
+              const file = bucket.file(tmp_filename, options);
+              const text = await file.slice(0, 5).text();
+              expect(text).toBe("Hello");
             });
 
             it("should check if a key exists or content-length", async () => {
@@ -384,7 +390,15 @@ for (let credentials of allCredentials) {
                 expect(response.headers.get("content-type")).toStartWith("application/json");
               }
             });
+            it("should be able to upload large files using writer() #16452", async () => {
+              const s3file = file(tmp_filename, options);
+              const writer = s3file.writer();
+              writer.write(mediumPayload);
+              writer.write(mediumPayload);
 
+              await writer.end();
+              expect(await s3file.text()).toBe(mediumPayload.repeat(2));
+            });
             it("should be able to upload large files in one go using Bun.write", async () => {
               {
                 await Bun.write(file(tmp_filename, options), bigPayload);
