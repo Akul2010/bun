@@ -2,13 +2,11 @@ const std = @import("std");
 const JSC = bun.JSC;
 const VirtualMachine = bun.JSC.VirtualMachine;
 const Allocator = std.mem.Allocator;
-const Lock = bun.Mutex;
 const bun = @import("bun");
 const Environment = bun.Environment;
 const Fetch = JSC.WebCore.Fetch;
 const Bun = JSC.API.Bun;
 const TaggedPointerUnion = @import("../ptr.zig").TaggedPointerUnion;
-const typeBaseName = @import("../meta.zig").typeBaseName;
 const AsyncGlobWalkTask = JSC.API.Glob.WalkTask.AsyncGlobWalkTask;
 const CopyFilePromiseTask = bun.webcore.Blob.copy_file.CopyFilePromiseTask;
 const AsyncTransformTask = JSC.API.JSTranspiler.TransformTask.AsyncTransformTask;
@@ -53,7 +51,7 @@ pub fn ConcurrentPromiseTask(comptime Context: type) type {
                 .globalThis = globalThis,
             });
             var promise = JSC.JSPromise.create(globalThis);
-            this.promise.strong.set(globalThis, promise.asValue(globalThis));
+            this.promise.strong.set(globalThis, promise.toJS());
             this.ref.ref(this.event_loop.virtual_machine);
 
             return this;

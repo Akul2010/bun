@@ -1,5 +1,5 @@
-import { write, Glob, file } from "bun";
-import { join, resolve, relative } from "path";
+import { Glob, file, write } from "bun";
+import { join, relative, resolve } from "path";
 import { normalize } from "path/posix";
 
 const root = resolve(import.meta.dirname, "..");
@@ -18,12 +18,14 @@ async function globSources(output, patterns, excludes = []) {
   }
   total += paths.length;
 
-  const sources = paths
-    .map(path => normalize(relative(root, path)))
-    .sort((a, b) => a.localeCompare(b))
-    .join("\n");
+  const sources =
+    paths
+      .map(path => normalize(relative(root, path)))
+      .sort((a, b) => a.localeCompare(b))
+      .join("\n")
+      .trim() + "\n";
 
-  await write(join(root, "cmake", output), sources);
+  await write(join(root, "cmake", "sources", output), sources);
 }
 
 const input = await file(join(root, "cmake", "Sources.json")).json();

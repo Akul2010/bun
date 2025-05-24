@@ -56,7 +56,6 @@ const windows = bun.windows;
 const Environment = bun.Environment;
 const JSC = bun.JSC;
 const MAX_PATH_BYTES = bun.MAX_PATH_BYTES;
-const PathString = bun.PathString;
 const SystemError = JSC.SystemError;
 
 const linux = syscall;
@@ -331,7 +330,7 @@ pub const Error = struct {
 
     const todo_errno = std.math.maxInt(Int) - 1;
 
-    pub const Int = if (Environment.isWindows) u16 else u8; // @TypeOf(@intFromEnum(E.BADF));
+    pub const Int = u16;
 
     /// TODO: convert to function
     pub const oom = fromCode(E.NOMEM, .read);

@@ -252,7 +252,7 @@ ExceptionOr<void> Worker::postMessage(JSC::JSGlobalObject& state, JSC::JSValue m
         Zig::GlobalObject* globalObject = jsCast<Zig::GlobalObject*>(context.jsGlobalObject());
 
         auto ports = MessagePort::entanglePorts(context, WTFMove(message.transferredPorts));
-        auto event = MessageEvent::create(*globalObject, message.message.releaseNonNull(), std::nullopt, WTFMove(ports));
+        auto event = MessageEvent::create(*globalObject, message.message.releaseNonNull(), nullptr, WTFMove(ports));
 
         globalObject->globalEventScope->dispatchEvent(event.event);
     });
@@ -310,6 +310,11 @@ bool Worker::hasPendingActivity() const
 bool Worker::isClosingOrTerminated() const
 {
     return m_onlineClosingFlags & ClosingFlag;
+}
+
+bool Worker::isOnline() const
+{
+    return m_onlineClosingFlags & OnlineFlag;
 }
 
 void Worker::dispatchEvent(Event& event)
@@ -594,7 +599,7 @@ JSC_DEFINE_HOST_FUNCTION(jsFunctionPostMessage,
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     Zig::GlobalObject* globalObject = jsDynamicCast<Zig::GlobalObject*>(leixcalGlobalObject);
-    if (UNLIKELY(!globalObject))
+    if (!globalObject) [[unlikely]]
         return JSValue::encode(jsUndefined());
 
     Worker* worker = WebWorker__getParentWorker(globalObject->bunVM());
@@ -649,7 +654,7 @@ JSC_DEFINE_HOST_FUNCTION(jsFunctionPostMessage,
         Zig::GlobalObject* globalObject = jsCast<Zig::GlobalObject*>(context.jsGlobalObject());
 
         auto ports = MessagePort::entanglePorts(context, WTFMove(message.transferredPorts));
-        auto event = MessageEvent::create(*globalObject, message.message.releaseNonNull(), std::nullopt, WTFMove(ports));
+        auto event = MessageEvent::create(*globalObject, message.message.releaseNonNull(), nullptr, WTFMove(ports));
 
         protectedThis->dispatchEvent(event.event);
     });
